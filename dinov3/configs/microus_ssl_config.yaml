@@ -1,0 +1,249 @@
+
+# Basic settings
+name: experiment_dinov3_ssl
+# output-dir: /${oc.env:CHECKPOINT}/${oc.env:JOB_ID}
+seed: 0
+
+# CLI args from get_args_parser
+config-file: /home/obed/projects/aip-medilab/obed/medproj/dinov3/dinov3/configs/microus_ssl_config.yaml
+no-resume: false
+eval-only: false
+eval: ""
+eval_pretrained_weights: ""
+benchmark-codebase: false
+test-ibot: false
+profiling: false
+dump-fsdp-weights: false
+record_ref_losses: false
+ref_losses_path: ""
+multi-distillation: false
+opts: []
+
+# Model architecture
+MODEL:
+  META_ARCHITECTURE: SSLMetaArch
+  DEVICE: cuda
+  WEIGHTS: ''
+  DTYPE: float32
+
+# Compute precision
+compute_precision:
+  param_dtype: bf16
+  reduce_dtype: fp32
+  sharding_strategy: SHARD_GRAD_OP
+
+# DINO loss settings
+dino:
+  loss_weight: 1.0
+  global_ignore_diagonal: true
+  head_n_prototypes: 8192 #65536  # Your n_prototypes
+  head_bottleneck_dim: 256
+  head_norm_last_layer: false #true  # Your norm_last_layer setting
+  head_nlayers: 3
+  head_hidden_dim: 2048
+  koleo_loss_weight: 0.1
+  koleo_loss_distributed: false
+  koleo_topk: 1
+  koleo_distributed_replicas: 0
+  koleo_distributed_loss_group_size: null
+  koleo_distributed_loss_group_data: true
+  force_weight_norm: false
+  reweight_dino_local_loss: false
+  local_loss_weight_schedule:
+    start: 0.5
+    peak: 0.5
+    end: 0.5
+    warmup_epochs: 0
+
+# iBOT loss settings (masked image modeling)
+ibot:
+  loss_weight: 1.0
+  mask_sample_probability: 0.5
+  mask_ratio_min_max:
+  - 0.1
+  - 0.5
+  mask_random_circular_shift: false
+  force_masking_even_with_zero_weight: false
+  separate_head: true
+  head_n_prototypes: 8192
+  head_bottleneck_dim: 256
+  head_norm_last_layer: true
+  head_nlayers: 3
+  head_hidden_dim: 2048
+
+# GRAM loss (disabled)
+gram:
+  use_loss: false
+  compute_stats: false
+  loss_weight: 1.0
+  ema_teacher: false
+  ckpt: null
+  it_load_ema_teacher: -1
+  rep_update: true
+  update_frequency: 50000
+  it_first_update: 0
+  max_updates: null
+  normalized: true
+  img_level: false
+  remove_neg: false
+  remove_only_teacher_neg: false
+  tokens_used: all
+  global_teacher_resize_method: bicubic
+  global_teacher_resize_antialias: false
+  loss_weight_schedule: null
+
+# Training configuration
+train:
+  batch_size_per_gpu: 32  
+  dataset_path: /datasets/exactvu_pca/unlabelled_microus_png
+  data_config: null
+  output_dir: /${oc.env:CHECKPOINT}/${oc.env:JOB_ID}
+  saveckp_freq: 20 #40  # Your checkpoint frequency
+  seed: 0
+  num_workers: 16  # Your num_workers
+  OFFICIAL_EPOCH_LENGTH: 1250
+  monitor_gradient_norm: false
+  chunk_schedule: []
+  use_teacher_head: true
+  learn_from_teacher_tokens: false
+  centering: "sinkhorn_knopp"
+  checkpointing: false
+  checkpointing_full: false
+  compile: true
+  cudagraphs: false
+  sharded_eval_checkpoint: false
+  cache_dataset: false
+
+# Student model architecture
+student:
+  arch: vit_large  # Adjust to match architecture
+  patch_size: 16
+  drop_path_rate: 0.3
+  layerscale: 1.0e-05
+  pretrained_weights: '/datasets/exactvu_pca/checkpoint_store/dinov3/dinov3_vith16plus_pretrain_lvd1689m-7c1da9a5.pth'  # Set if loading pretrained weights
+  ffn_layer: "mlp"
+  ffn_ratio: 4.0
+  resume_from_teacher_chkpt: ""
+  qkv_bias: true
+  proj_bias: true
+  ffn_bias: true
+  norm_layer: "layernorm"
+  n_storage_tokens: 0
+  mask_k_bias: false
+  untie_cls_and_patch_norms: false
+  untie_global_and_local_cls_norm: false
+  in_chans: 3
+  pos_embed_type: rope
+  pos_embed_rope_base: 100.0
+  pos_embed_rope_min_period: null
+  pos_embed_rope_max_period: null
+  pos_embed_rope_normalize_coords: separate
+  pos_embed_rope_shift_coords: null
+  pos_embed_rope_jitter_coords: null
+  pos_embed_rope_rescale_coords: null
+  pos_embed_rope_dtype: bf16
+  fp8_enabled: false
+  fp8_filter: "blocks"
+
+# Teacher model settings
+teacher:
+  momentum_teacher: 0.992 
+  final_momentum_teacher: 1
+  warmup_teacher_temp: 0.04
+  teacher_temp: 0.07  
+  warmup_teacher_temp_epochs: 30
+  in_chans: 3
+
+# Distillation (disabled)
+distillation:
+  enabled: false
+  full_cfg_path: ""
+  checkpoint_path: ""
+
+multidistillation:
+  enabled: false
+
+# HRFT (disabled)
+hrft:
+  enabled: false
+  checkpoint_path: ""
+
+# Optimizer configuration
+optim:
+  epochs: 100 
+  optimizer: adamw
+  weight_decay: 0.04  
+  weight_decay_end: 0.4  
+  lr: 0.001  # base_lr
+  warmup_epochs: 10 
+  min_lr: 1.0e-06 
+  schedule_trunc_extra: 0.0
+  clip_grad: 3.0  
+  freeze_last_layer_epochs: 1 
+  scaling_rule: sqrt_wrt_1024
+  patch_embed_lr_mult: 0.2
+  dino_head_wd_multiplier: 1.0
+  layerwise_decay: 0.9
+  multi_tensor_optim: true
+  dump_fsdp_weights_path: ""
+  adamw_beta1: 0.9
+  adamw_beta2: 0.999
+
+# Data augmentation / crops (using DINOv3 defaults with your scale adjustments)
+crops:
+  global_crops_scale:
+  - 0.32 #0.4  # Your global_crops_scale
+  - 1.0
+  local_crops_number: 8 #0  # Your local_crops_number (disabled)
+  local_crops_scale:
+  - 0.05
+  - 0.4
+  global_crops_size: 224
+  local_crops_size: 96
+  global_local_crop_pairs_ratios: 1.0
+  gram_teacher_crops_size: null
+  localcrops_subset_of_globalcrops: false
+  share_color_jitter: false
+  horizontal_flips: true
+  gram_teacher_no_distortions: false
+  rgb_mean:  # Your grayscale/normalized mean
+  - 0.0
+  - 0.0
+  - 0.0
+  rgb_std:  # Your grayscale/normalized std
+  - 1.0
+  - 1.0
+  - 1.0
+
+# Evaluation settings
+evaluation:
+  eval_period_iterations: 12500
+  low_freq_every: 5
+  config_files:
+    high_freq: benchmark_high_frequency.yaml
+    low_freq: benchmark_low_frequency.yaml
+
+# Checkpointing
+checkpointing:
+  period: 3750
+  max_to_keep: 3
+  keep_every: 99999999999999999
+
+# Wandb logging (custom - you'll need to integrate this)
+wandb:
+  enabled: true
+  id: ""
+  name: ${name}
+  project: "ssl_mmibot_dinov3"
+  resume: false
+  job_type: "ssl_pretraining"
+
+# # Dataset info
+# dataset:
+#   name: nct2013
+#   nct_patches_data_path: /datasets/exactvu_pca/nct2013_bmode_patches
+
+# # Monitoring
+# monitored_metric: val_auc_probing
+# debug: false
+# slurm_job_id: ${JOB_ID}
