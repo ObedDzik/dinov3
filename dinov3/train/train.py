@@ -576,9 +576,7 @@ def do_train(cfg, model, resume=False):
 
     wandb_id = cfg.wandb.id
     if not wandb_id:
-        # First try SLURM_JOB_ID
         wandb_id = os.environ.get("SLURM_JOB_ID")
-        # Fallback to local random ID if not running under SLURM
         if wandb_id is None:
             import uuid
             wandb_id = str(uuid.uuid4())
@@ -586,7 +584,6 @@ def do_train(cfg, model, resume=False):
     wandb_name = cfg.wandb.name if cfg.wandb.name else f"run_{wandb_id}"
 
     if getattr(cfg, "wandb", None) and cfg.wandb.enabled:
-            # Ensure JOB_ID and name are strings
         wandb_id = str(cfg.wandb.id) if cfg.wandb.id else None
         wandb_name = str(cfg.wandb.name) if cfg.wandb.name else None
 
@@ -777,7 +774,7 @@ def do_train(cfg, model, resume=False):
         # Log metrics to WandB
         if log_to_wandb:
             wandb_metrics = {"iteration": iteration, "lr": lr, "wd": wd, "mom": mom, "last_layer_lr": last_layer_lr, "total_loss": total_loss}
-            wandb_metrics.update(metrics_dict)  # add all other metrics
+            wandb_metrics.update(metrics_dict)
             wandb.log(wandb_metrics, step=iteration)
 
 
