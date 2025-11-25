@@ -15,6 +15,8 @@ from pathlib import Path
 import yaml
 from typing import Any, Dict
 import wandb
+from monitor_ import add_memory_monitoring_to_training
+import psutil
 
 import torch
 import torch.distributed
@@ -652,6 +654,8 @@ def do_train(cfg, model, resume=False):
     logger.info("Starting training from iteration %d", start_iter)
     metrics_file = os.path.join(cfg.train.output_dir, "training_metrics.json")
     metric_logger = MetricLogger(delimiter="  ", output_file=metrics_file)
+    #GPU consumption monitoring
+    memory_monitor = add_memory_monitoring_to_training(cfg)
     # Manual garbage collection
     gc.disable()
     gc.collect()
@@ -752,6 +756,19 @@ def do_train(cfg, model, resume=False):
         optimizer.step()
         model.update_ema(mom)
 
+
+        # === START: Memory leak fixes ===
+        # Convert tensors to Python floats to prevent accumulation
+        metrics_dict_cleaned = {}
+        for key, value in metrics_dict.items():
+            if isinstance(value, torch.Tensor):
+                metrics_dict_cleaned[key] = value.detach().cpu().item()
+            else:
+                metrics_dict_cleaned[key] = value
+
+        total_loss_float = total_loss.detach().cpu().item()
+        # === END: Memory leak fixes ===
+
         # [GRAM] Update gram teacher when using gram teacher and frequent updates
         if (
             cfg.gram.use_loss
@@ -764,18 +781,35 @@ def do_train(cfg, model, resume=False):
             model.update_gram()
             num_gram_updates += 1
 
-        # Log metrics
+        # Log metrics (NOW WITH CLEANED VALUES)
         metric_logger.update(lr=lr)
         metric_logger.update(wd=wd)
         metric_logger.update(mom=mom)
         metric_logger.update(last_layer_lr=last_layer_lr)
-        metric_logger.update(total_loss=total_loss, **metrics_dict)
+        metric_logger.update(total_loss=total_loss_float, **metrics_dict_cleaned)
 
-        # Log metrics to WandB
+        # Log metrics to WandB (NOW WITH CLEANED VALUES)
         if log_to_wandb:
-            wandb_metrics = {"iteration": iteration, "lr": lr, "wd": wd, "mom": mom, "last_layer_lr": last_layer_lr, "total_loss": total_loss}
-            wandb_metrics.update(metrics_dict)
+            wandb_metrics = {
+                "iteration": iteration, 
+                "lr": float(lr), 
+                "wd": float(wd), 
+                "mom": float(mom), 
+                "last_layer_lr": float(last_layer_lr), 
+                "total_loss": total_loss_float
+            }
+            wandb_metrics.update(metrics_dict_cleaned)
             wandb.log(wandb_metrics, step=iteration)
+
+        # === START: Additional cleanup ===
+        # Delete tensors to free memory
+        del total_loss, total_loss_all_ranks, metrics_values
+
+        # More frequent garbage collection
+        if (iteration + 1) % 50 == 0:
+            gc.collect()
+            torch.cuda.empty_cache()
+        # === END: Additional cleanup ===
 
 
         # Submit evaluation jobs
@@ -785,6 +819,9 @@ def do_train(cfg, model, resume=False):
         ):
             do_test(cfg, model, f"training_{iteration}", process_group=process_subgroup)
             torch.cuda.synchronize()
+                # ADD THESE:
+            torch.cuda.empty_cache()
+            gc.collect()
 
         # Checkpointing
         if (iteration + 1) % cfg.checkpointing.period == 0:
@@ -802,8 +839,22 @@ def do_train(cfg, model, resume=False):
                 if "keep_every" in cfg.checkpointing and (iteration + 1) % cfg.checkpointing.keep_every == 0:
                     keep_checkpoint_copy(ckpt_dir / str(iteration))
 
+
+            # gc.collect()
+            # torch.cuda.empty_cache()
+            
+            # # Log memory after cleanup
+            # process = psutil.Process(os.getpid())
+            # mem_after = process.memory_info().rss / 1024**3
+            # logger.info(f"CPU Memory after checkpoint cleanup: {mem_after:.2f}GB")
+        
+        #GPU consumption code
+        # memory_monitor.log(iteration)
+        
         iteration = iteration + 1
     metric_logger.synchronize_between_processes()
+    #GPU consumption code
+    logger.info(memory_monitor.get_summary())
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
