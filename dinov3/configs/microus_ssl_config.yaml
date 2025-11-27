@@ -1,11 +1,11 @@
 
 # Basic settings
-name: experiment_dinov3_ssl_vitl
+name: experiment_dinov3_ssl_b200
 # output-dir: /${oc.env:CHECKPOINT}/${oc.env:JOB_ID}
 seed: 0
 
 # CLI args from get_args_parser
-config-file: /home/obed/projects/aip-medilab/obed/medproj/dinov3/dinov3/configs/microus_ssl_config.yaml
+config-file: /home/obed/medproj/dinov3/dinov3/configs/microus_ssl_config.yaml
 no-resume: false
 eval-only: false
 eval: ""
@@ -94,8 +94,8 @@ gram:
 
 # Training configuration
 train:
-  batch_size_per_gpu: 64
-  dataset_path: /datasets/exactvu_pca/unlabelled_microus_png
+  batch_size_per_gpu: 32  
+  dataset_path: /data/project/users/mahdi/unlabelled_microus_png
   data_config: null
   output_dir: /${oc.env:CHECKPOINT}/${oc.env:JOB_ID}
   saveckp_freq: 20 #40  # Your checkpoint frequency
@@ -120,7 +120,7 @@ student:
   patch_size: 16
   drop_path_rate: 0.3
   layerscale: 1.0e-05
-  pretrained_weights: '/datasets/exactvu_pca/checkpoint_store/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth'  # Set if loading pretrained weights
+  pretrained_weights: '/data/project/users/obed/checkpoint_store/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth'  # Set if loading pretrained weights
   ffn_layer: "mlp"
   ffn_ratio: 4.0
   resume_from_teacher_chkpt: ""
