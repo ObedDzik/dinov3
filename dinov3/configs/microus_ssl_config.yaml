@@ -123,7 +123,7 @@ student:
   pretrained_weights: '/datasets/exactvu_pca/checkpoint_store/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth'  # Set if loading pretrained weights
   ffn_layer: "mlp"
   ffn_ratio: 4.0
-  resume_from_teacher_chkpt: ""
+  resume_from_teacher_chkpt: '/datasets/exactvu_pca/checkpoint_store/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth'
   qkv_bias: true
   proj_bias: true
   ffn_bias: true

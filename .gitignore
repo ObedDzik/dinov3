@@ -17,9 +17,8 @@ dist/
 # Ignore vscode directory
 .vscode/
 
-<<<<<<< HEAD
 dino_env/
-=======
 dino3_env/
 logs/
->>>>>>> origin/development
+
+wandb/

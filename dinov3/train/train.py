@@ -655,10 +655,10 @@ def do_train(cfg, model, resume=False):
     metrics_file = os.path.join(cfg.train.output_dir, "training_metrics.json")
     metric_logger = MetricLogger(delimiter="  ", output_file=metrics_file)
     #GPU consumption monitoring
-    memory_monitor = add_memory_monitoring_to_training(cfg)
+    # memory_monitor = add_memory_monitoring_to_training(cfg)
     # Manual garbage collection
-    gc.disable()
-    gc.collect()
+    # gc.disable()
+    # gc.collect()
 
     # Training loop
     student = model.student
@@ -691,7 +691,7 @@ def do_train(cfg, model, resume=False):
         # Garbage collection (trigger manually so it happens on all ranks at the same time)
         if (iteration + 1) % 150 == 0:
             logger.info("Garbage collection")
-            gc.collect()
+            # gc.collect()
 
         if cfg.gram.use_loss and model.gram_it_load_ema_teacher == it:
             logger.info(f"Loading EMA teacher into Gram teacher before iteration {it}")
@@ -805,11 +805,11 @@ def do_train(cfg, model, resume=False):
         # Delete tensors to free memory
         del total_loss, total_loss_all_ranks, metrics_values
 
-        # More frequent garbage collection
-        if (iteration + 1) % 50 == 0:
-            gc.collect()
-            torch.cuda.empty_cache()
-        # === END: Additional cleanup ===
+        # # More frequent garbage collection
+        # if (iteration + 1) % 50 == 0:
+        #     gc.collect()
+        #     torch.cuda.empty_cache()
+        # # === END: Additional cleanup ===
 
 
         # Submit evaluation jobs
@@ -819,9 +819,9 @@ def do_train(cfg, model, resume=False):
         ):
             do_test(cfg, model, f"training_{iteration}", process_group=process_subgroup)
             torch.cuda.synchronize()
-                # ADD THESE:
-            torch.cuda.empty_cache()
-            gc.collect()
+            #     # ADD THESE:
+            # torch.cuda.empty_cache()
+            # gc.collect()
 
         # Checkpointing
         if (iteration + 1) % cfg.checkpointing.period == 0:
@@ -853,8 +853,8 @@ def do_train(cfg, model, resume=False):
         
         iteration = iteration + 1
     metric_logger.synchronize_between_processes()
-    #GPU consumption code
-    logger.info(memory_monitor.get_summary())
+    # #GPU consumption code
+    # logger.info(memory_monitor.get_summary())
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 

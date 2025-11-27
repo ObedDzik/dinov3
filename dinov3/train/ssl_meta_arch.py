@@ -326,8 +326,10 @@ class SSLMetaArch(nn.Module):
             init_fsdp_model_from_checkpoint(
                 self.student,
                 self.cfg.student.resume_from_teacher_chkpt,
-                skip_load_keys=["dino_loss.center", "ibot_patch_loss.center"],
-                keys_not_sharded=["backbone.rope_embed.periods", "qkv.bias_mask"],
+                # skip_load_keys=["dino_loss.center", "ibot_patch_loss.center"],
+                skip_load_keys=["dino_loss.center", "ibot_patch_loss.center", "storage_tokens", "qkv.bias_mask"],
+                # keys_not_sharded=["backbone.rope_embed.periods", "qkv.bias_mask"],
+                keys_not_sharded=["rope_embed.periods"],
                 process_group=distributed.get_process_subgroup(),
             )
             self.model_ema.load_state_dict(self.student.state_dict())

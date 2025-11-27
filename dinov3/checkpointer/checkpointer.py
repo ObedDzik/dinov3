@@ -289,7 +289,12 @@ def init_fsdp_model_from_checkpoint(
 ):
     if not Path(checkpoint_path).is_dir():  # PyTorch standard checkpoint
         logger.info(f"Loading pretrained weights from {checkpoint_path}")
-        chkpt = torch.load(checkpoint_path, map_location="cpu")["teacher"]
+        chkpt = torch.load(checkpoint_path, map_location="cpu")
+        if "teacher" in chkpt.keys():
+            chkpt=chkpt["teacher"]
+        # else:
+        #     prefix="backbone."
+        #     chkpt={prefix+k:v for k,v in chkpt.items()}
         from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 
         if process_group is None:
@@ -308,7 +313,7 @@ def init_fsdp_model_from_checkpoint(
             )
             for key, tensor in chkpt.items()
         }
-        model.load_state_dict(
+        model["backbone"].load_state_dict(
             {
                 key: tensor
                 for key, tensor in chkpt.items()
