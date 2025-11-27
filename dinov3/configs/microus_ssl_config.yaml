@@ -1,6 +1,6 @@
 
 # Basic settings
-name: experiment_dinov3_ssl_vitl
+name: experiment_dinov3_ssl_vitl_pretrain_bkb
 # output-dir: /${oc.env:CHECKPOINT}/${oc.env:JOB_ID}
 seed: 0
 
@@ -151,7 +151,7 @@ teacher:
   final_momentum_teacher: 0.992
   warmup_teacher_temp: 0.04
   teacher_temp: 0.07  
-  warmup_teacher_temp_epochs: 0
+  warmup_teacher_temp_epochs: 30
   in_chans: 3
 
 # Distillation (disabled)
