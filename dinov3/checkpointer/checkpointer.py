@@ -131,6 +131,21 @@ def save_checkpoint(
 
     logger.info(f"Saved: {ckpt_dir}")
 
+    # Explicitly delete the state dict copies to free memory
+    del to_save
+    import gc
+    gc.collect()
+    
+    # Log memory after cleanup (optional but useful)
+    if rank == 0:
+        try:
+            import psutil
+            process = psutil.Process()
+            mem_gb = process.memory_info().rss / 1024**3
+            logger.info(f"Memory after checkpoint save: {mem_gb:.2f}GB")
+        except:
+            pass
+
 
 def load_checkpoint(
     ckpt_dir: str | Path,  # output_dir/ckpt/199

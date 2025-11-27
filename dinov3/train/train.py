@@ -12,10 +12,16 @@ import os
 import sys
 from functools import partial
 from pathlib import Path
+import yaml
+from typing import Any, Dict
+import wandb
+from monitor_ import add_memory_monitoring_to_training
+import psutil
 
 import torch
 import torch.distributed
 from torch.distributed._tensor import DTensor
+from omegaconf import OmegaConf
 
 import dinov3.distributed as distributed
 from dinov3.checkpointer import (
@@ -27,6 +33,7 @@ from dinov3.checkpointer import (
     save_checkpoint,
 )
 from dinov3.configs import setup_config, setup_job, setup_multidistillation
+from dinov3.data.build_dataloader import MicrousDataset
 from dinov3.data import (
     MaskingGenerator,
     SamplerType,
@@ -46,14 +53,96 @@ torch.backends.cudnn.benchmark = False  # True
 
 logger = logging.getLogger("dinov3")
 
+import argparse
+import os
+from pathlib import Path
+from typing import Any, Dict
+from omegaconf import OmegaConf
+
+
+def load_args_from_yaml(yaml_path: str) -> Dict[str, Any]:
+    """Load arguments from a YAML file with OmegaConf support."""
+    yaml_path = Path(yaml_path).resolve()
+    
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"YAML file not found: {yaml_path}")
+    
+    # Register custom resolvers for common SLURM variables with defaults
+    if not OmegaConf.has_resolver("slurm_job_id"):
+        OmegaConf.register_new_resolver(
+            "slurm_job_id",
+            lambda default="local_test": os.getenv("SLURM_JOB_ID", default)
+        )
+    
+    # Use OmegaConf to load - this handles ${oc.env:VAR} interpolation
+    config = OmegaConf.load(yaml_path)
+    
+    # DON'T resolve yet - convert to dict with resolve=False to preserve interpolations
+    # This allows command-line args to override without triggering interpolation errors
+    try:
+        config_dict = OmegaConf.to_container(config, resolve=False)
+    except Exception as e:
+        # If even basic loading fails, provide helpful error
+        print(f"ERROR loading YAML: {e}")
+        raise
+    
+    # Now selectively resolve only the values we can resolve
+    # Skip any that have interpolation errors
+    resolved_dict = {}
+    if config_dict is not None:
+        for key, value in config_dict.items():
+            try:
+                if isinstance(value, str) and ('${' in value):
+                    # Try to resolve this specific interpolation
+                    resolved_value = OmegaConf.create({key: value})
+                    OmegaConf.resolve(resolved_value)
+                    resolved_dict[key] = resolved_value[key]
+                else:
+                    resolved_dict[key] = value
+            except Exception:
+                # If interpolation fails, keep the original value
+                # It will be overridden by command-line args anyway
+                print(f"Warning: Could not resolve interpolation for '{key}', will use command-line value if provided")
+                # Don't include this key - let it use parser default or command-line value
+                continue
+    
+    # Convert relative paths to absolute paths relative to YAML file location
+    yaml_dir = yaml_path.parent
+    
+    if resolved_dict:
+        # Fix path-like arguments to be absolute (if they're relative)
+        path_keys = ['config-file', 'config_file', 'output-dir', 'output_dir', 
+                     'eval_pretrained_weights', 'ref_losses_path']
+        
+        for key in path_keys:
+            if key in resolved_dict and resolved_dict[key]:
+                value = resolved_dict[key]
+                # Skip if already absolute, empty, or None
+                if value and isinstance(value, str) and not os.path.isabs(value):
+                    # Make relative to YAML file location
+                    resolved_dict[key] = str((yaml_dir / value).resolve())
+        
+        return resolved_dict
+    
+    return {}
+
 
 def get_args_parser(add_help: bool = True):
     parser = argparse.ArgumentParser("DINOv3 training", add_help=add_help)
+    
+    # Add yaml-file argument as the primary way to provide configuration
+    parser.add_argument(
+        "--yaml-file",
+        type=str,
+        default=None,
+        help="Path to YAML file containing all arguments"
+    )
+    
     parser.add_argument("--config-file", default="", metavar="FILE", help="path to config file")
     parser.add_argument(
         "--no-resume",
         action="store_true",
-        help="Whether to not attempt to resume from the checkpoint directory. ",
+        help="Whether to not attempt to resume from the checkpoint directory.",
     )
     parser.add_argument("--eval-only", action="store_true", help="perform evaluation only")
     parser.add_argument("--eval", type=str, default="", help="Eval type to perform")
@@ -93,6 +182,105 @@ For python-based LazyConfig, use "path.key=value".
     parser.add_argument("--multi-distillation", action="store_true", help="run multi-distillation")
 
     return parser
+
+
+def parse_args_with_yaml(argv=None):
+    """
+    Parse arguments with YAML file support.
+    Command-line arguments override YAML settings.
+    """
+    parser = get_args_parser()
+    
+    # First, parse to check if yaml-file is provided
+    args, remaining = parser.parse_known_args(argv)
+    
+    # If yaml-file is provided, load it first
+    if args.yaml_file:
+        print(f"Loading configuration from: {args.yaml_file}")
+        yaml_args = load_args_from_yaml(args.yaml_file)
+        
+        # Normalize keys (handle both hyphen and underscore versions)
+        normalized_yaml_args = {}
+        for key, value in yaml_args.items():
+            normalized_key = key.replace('-', '_')
+            normalized_yaml_args[normalized_key] = value
+        
+        # Set defaults from YAML for the parser
+        # Only set if the key exists in parser
+        valid_defaults = {}
+        for key, value in normalized_yaml_args.items():
+            # Check if this is a valid argument
+            if any(action.dest == key for action in parser._actions):
+                valid_defaults[key] = value
+        
+        parser.set_defaults(**valid_defaults)
+    
+    # Final parse with all defaults set
+    args = parser.parse_args(argv)
+    
+    # Validate config_file exists and is a file
+    if args.config_file:
+        config_path = Path(args.config_file)
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {args.config_file}")
+        if config_path.is_dir():
+            raise IsADirectoryError(f"config-file points to a directory, not a file: {args.config_file}")
+        # Ensure it's absolute
+        args.config_file = str(config_path.resolve())
+    
+    # Validate output_dir
+    if args.output_dir:
+        args.output_dir = str(Path(args.output_dir).resolve())
+    
+    return args
+
+
+# def get_args_parser(add_help: bool = True):
+#     parser = argparse.ArgumentParser("DINOv3 training", add_help=add_help)
+#     parser.add_argument("--config-file", default="", metavar="FILE", help="path to config file")
+#     parser.add_argument(
+#         "--no-resume",
+#         action="store_true",
+#         help="Whether to not attempt to resume from the checkpoint directory. ",
+#     )
+#     parser.add_argument("--eval-only", action="store_true", help="perform evaluation only")
+#     parser.add_argument("--eval", type=str, default="", help="Eval type to perform")
+#     parser.add_argument(
+#         "--eval_pretrained_weights",
+#         type=str,
+#         default="",
+#         help="Path to pretrained weights",
+#     )
+#     parser.add_argument(
+#         "opts",
+#         help="""
+# Modify config options at the end of the command. For Yacs configs, use
+# space-separated "PATH.KEY VALUE" pairs.
+# For python-based LazyConfig, use "path.key=value".
+#         """.strip(),
+#         default=None,
+#         nargs=argparse.REMAINDER,
+#     )
+#     parser.add_argument(
+#         "--output-dir",
+#         default="./local_dino",
+#         type=str,
+#         help="Path to save logs and checkpoints.",
+#     )
+#     parser.add_argument("--seed", default=0, type=int, help="RNG seed")
+#     parser.add_argument(
+#         "--benchmark-codebase",
+#         action="store_true",
+#         help="test the codebase for a few iters",
+#     )
+#     parser.add_argument("--test-ibot", action="store_true", help="test ibot")
+#     parser.add_argument("--profiling", action="store_true", help="do profiling")
+#     parser.add_argument("--dump-fsdp-weights", action="store_true", help="dump fsdp weights")
+#     parser.add_argument("--record_ref_losses", action="store_true", help="record reference losses")
+#     parser.add_argument("--ref_losses_path", default="", type=str)
+#     parser.add_argument("--multi-distillation", action="store_true", help="run multi-distillation")
+
+#     return parser
 
 
 def build_optimizer(cfg, params_groups):
@@ -305,9 +493,16 @@ def build_data_loader_from_cfg(
     )
     batch_size = dataloader_batch_size_per_gpu
     num_workers = cfg.train.num_workers
-    dataset_path = cfg.train.dataset_path
-    dataset = make_dataset(
-        dataset_str=dataset_path,
+    # dataset_path = cfg.train.dataset_path
+    # dataset = make_dataset(
+    #     dataset_str=dataset_path,
+    #     transform=model.build_data_augmentation_dino(cfg),
+    #     target_transform=lambda _: (),
+    # )
+
+    dataset = MicrousDataset(
+        root=cfg.train.dataset_path, 
+        split="train",
         transform=model.build_data_augmentation_dino(cfg),
         target_transform=lambda _: (),
     )
@@ -380,6 +575,34 @@ def build_multi_resolution_data_loader_from_cfg(
 
 
 def do_train(cfg, model, resume=False):
+
+    wandb_id = cfg.wandb.id
+    if not wandb_id:
+        wandb_id = os.environ.get("SLURM_JOB_ID")
+        if wandb_id is None:
+            import uuid
+            wandb_id = str(uuid.uuid4())
+
+    wandb_name = cfg.wandb.name if cfg.wandb.name else f"run_{wandb_id}"
+
+    if getattr(cfg, "wandb", None) and cfg.wandb.enabled:
+        wandb_id = str(cfg.wandb.id) if cfg.wandb.id else None
+        wandb_name = str(cfg.wandb.name) if cfg.wandb.name else None
+
+        wandb.init(
+            project=cfg.wandb.project,
+            id=wandb_id,
+            name=wandb_name,
+            resume=cfg.wandb.resume,
+            job_type=cfg.wandb.job_type,
+            config=OmegaConf.to_container(cfg, resolve=True),
+            )
+        log_to_wandb = True
+    else:
+        log_to_wandb = False
+
+
+
     process_subgroup = distributed.get_process_subgroup()
     ckpt_dir = Path(cfg.train.output_dir, "ckpt").expanduser()
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -431,6 +654,8 @@ def do_train(cfg, model, resume=False):
     logger.info("Starting training from iteration %d", start_iter)
     metrics_file = os.path.join(cfg.train.output_dir, "training_metrics.json")
     metric_logger = MetricLogger(delimiter="  ", output_file=metrics_file)
+    #GPU consumption monitoring
+    memory_monitor = add_memory_monitoring_to_training(cfg)
     # Manual garbage collection
     gc.disable()
     gc.collect()
@@ -531,6 +756,19 @@ def do_train(cfg, model, resume=False):
         optimizer.step()
         model.update_ema(mom)
 
+
+        # === START: Memory leak fixes ===
+        # Convert tensors to Python floats to prevent accumulation
+        metrics_dict_cleaned = {}
+        for key, value in metrics_dict.items():
+            if isinstance(value, torch.Tensor):
+                metrics_dict_cleaned[key] = value.detach().cpu().item()
+            else:
+                metrics_dict_cleaned[key] = value
+
+        total_loss_float = total_loss.detach().cpu().item()
+        # === END: Memory leak fixes ===
+
         # [GRAM] Update gram teacher when using gram teacher and frequent updates
         if (
             cfg.gram.use_loss
@@ -543,12 +781,36 @@ def do_train(cfg, model, resume=False):
             model.update_gram()
             num_gram_updates += 1
 
-        # Log metrics
+        # Log metrics (NOW WITH CLEANED VALUES)
         metric_logger.update(lr=lr)
         metric_logger.update(wd=wd)
         metric_logger.update(mom=mom)
         metric_logger.update(last_layer_lr=last_layer_lr)
-        metric_logger.update(total_loss=total_loss, **metrics_dict)
+        metric_logger.update(total_loss=total_loss_float, **metrics_dict_cleaned)
+
+        # Log metrics to WandB (NOW WITH CLEANED VALUES)
+        if log_to_wandb:
+            wandb_metrics = {
+                "iteration": iteration, 
+                "lr": float(lr), 
+                "wd": float(wd), 
+                "mom": float(mom), 
+                "last_layer_lr": float(last_layer_lr), 
+                "total_loss": total_loss_float
+            }
+            wandb_metrics.update(metrics_dict_cleaned)
+            wandb.log(wandb_metrics, step=iteration)
+
+        # === START: Additional cleanup ===
+        # Delete tensors to free memory
+        del total_loss, total_loss_all_ranks, metrics_values
+
+        # More frequent garbage collection
+        if (iteration + 1) % 50 == 0:
+            gc.collect()
+            torch.cuda.empty_cache()
+        # === END: Additional cleanup ===
+
 
         # Submit evaluation jobs
         if (
@@ -557,6 +819,9 @@ def do_train(cfg, model, resume=False):
         ):
             do_test(cfg, model, f"training_{iteration}", process_group=process_subgroup)
             torch.cuda.synchronize()
+                # ADD THESE:
+            torch.cuda.empty_cache()
+            gc.collect()
 
         # Checkpointing
         if (iteration + 1) % cfg.checkpointing.period == 0:
@@ -574,18 +839,91 @@ def do_train(cfg, model, resume=False):
                 if "keep_every" in cfg.checkpointing and (iteration + 1) % cfg.checkpointing.keep_every == 0:
                     keep_checkpoint_copy(ckpt_dir / str(iteration))
 
+
+            # gc.collect()
+            # torch.cuda.empty_cache()
+            
+            # # Log memory after cleanup
+            # process = psutil.Process(os.getpid())
+            # mem_after = process.memory_info().rss / 1024**3
+            # logger.info(f"CPU Memory after checkpoint cleanup: {mem_after:.2f}GB")
+        
+        #GPU consumption code
+        # memory_monitor.log(iteration)
+        
         iteration = iteration + 1
     metric_logger.synchronize_between_processes()
+    #GPU consumption code
+    logger.info(memory_monitor.get_summary())
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
+# def main(argv=None):
+#     if argv is None:
+#         args = get_args_parser().parse_args()
+#     else:
+#         args = get_args_parser().parse_args(argv[1:])
+#         args.output_dir = sys.argv[1]
+#     if args.multi_distillation:
+#         print("performing multidistillation run")
+#         cfg = setup_multidistillation(args)
+#         torch.distributed.barrier()
+#         logger.info("setup_multidistillation done")
+#         assert cfg.MODEL.META_ARCHITECTURE == "MultiDistillationMetaArch"
+#     else:
+#         setup_job(output_dir=args.output_dir, seed=args.seed)
+#         cfg = setup_config(args, strict_cfg=False)
+#         logger.info(cfg)
+#         setup_logging(
+#             output=os.path.join(os.path.abspath(args.output_dir), "nan_logs"),
+#             name="nan_logger",
+#         )
+#     meta_arch = {
+#         "SSLMetaArch": SSLMetaArch,
+#         "MultiDistillationMetaArch": MultiDistillationMetaArch,
+#     }.get(cfg.MODEL.META_ARCHITECTURE, None)
+#     if meta_arch is None:
+#         raise ValueError(f"Unknown MODEL.META_ARCHITECTURE {cfg.MODEL.META_ARCHITECTURE}")
+#     logger.info(f"Making meta arch {meta_arch.__name__}")
+#     with torch.device("meta"):
+#         model = meta_arch(cfg)
+#     model.prepare_for_distributed_training()
+#     # Fill all values with `nans` so that we identify
+#     # non-initialized values
+#     model._apply(
+#         lambda t: torch.full_like(
+#             t,
+#             fill_value=math.nan if t.dtype.is_floating_point else (2 ** (t.dtype.itemsize * 8 - 1)),
+#             device="cuda",
+#         ),
+#         recurse=True,
+#     )
+#     logger.info(f"Model after distributed:\n{model}")
+#     if args.eval_only:
+#         model.init_weights()
+#         iteration = (
+#             model.get_checkpointer_class()(model, save_dir=cfg.train.output_dir)
+#             .resume_or_load(cfg.MODEL.WEIGHTS, resume=not args.no_resume)
+#             .get("iteration", -1)
+#             + 1
+#         )
+#         return do_test(cfg, model, f"manual_{iteration}")
+#     do_train(cfg, model, resume=not args.no_resume)
+
+
+# if __name__ == "__main__":
+#     main()
+
+
+
 def main(argv=None):
     if argv is None:
-        args = get_args_parser().parse_args()
+        args = parse_args_with_yaml()
     else:
-        args = get_args_parser().parse_args(argv[1:])
+        args = parse_args_with_yaml(argv[1:])
         args.output_dir = sys.argv[1]
+    
     if args.multi_distillation:
         print("performing multidistillation run")
         cfg = setup_multidistillation(args)
@@ -600,18 +938,20 @@ def main(argv=None):
             output=os.path.join(os.path.abspath(args.output_dir), "nan_logs"),
             name="nan_logger",
         )
+    
     meta_arch = {
         "SSLMetaArch": SSLMetaArch,
         "MultiDistillationMetaArch": MultiDistillationMetaArch,
     }.get(cfg.MODEL.META_ARCHITECTURE, None)
+    
     if meta_arch is None:
         raise ValueError(f"Unknown MODEL.META_ARCHITECTURE {cfg.MODEL.META_ARCHITECTURE}")
+    
     logger.info(f"Making meta arch {meta_arch.__name__}")
     with torch.device("meta"):
         model = meta_arch(cfg)
+    
     model.prepare_for_distributed_training()
-    # Fill all values with `nans` so that we identify
-    # non-initialized values
     model._apply(
         lambda t: torch.full_like(
             t,
@@ -620,7 +960,9 @@ def main(argv=None):
         ),
         recurse=True,
     )
+    
     logger.info(f"Model after distributed:\n{model}")
+    
     if args.eval_only:
         model.init_weights()
         iteration = (
@@ -630,6 +972,7 @@ def main(argv=None):
             + 1
         )
         return do_test(cfg, model, f"manual_{iteration}")
+    
     do_train(cfg, model, resume=not args.no_resume)
 
 
