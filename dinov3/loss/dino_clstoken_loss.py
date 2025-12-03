@@ -69,6 +69,45 @@ class DINOLoss(nn.Module):
         Q *= B  # the colomns must sum to 1 so that Q is an assignment
         return Q.t()
 
+    # @torch.no_grad()
+    # def sinkhorn_knopp_teacher(self, teacher_output, teacher_temp, n_iterations=3):
+    #     # === FIX: Apply pending center update ===
+    #     # self.apply_center_update()
+    #     # # === END FIX ===
+        
+    #     # # teacher_output: [batch, prototypes]
+    #     # teacher_output = teacher_output.float()
+        
+    #     # # === FIX: Subtract center before Sinkhorn-Knopp ===
+    #     # teacher_output = teacher_output - self.center
+    #     # # === END FIX ===
+        
+    #     world_size = get_subgroup_size() if dist.is_initialized() else 1
+    #     Q = torch.exp(teacher_output / teacher_temp).t()  # Q is K-by-B for consistency with notations from our paper
+    #     B = Q.shape[1] * world_size  # number of samples to assign
+    #     K = Q.shape[0]  # how many prototypes
+
+    #     # make the matrix sums to 1
+    #     sum_Q = torch.sum(Q)
+    #     if dist.is_initialized():
+    #         dist.all_reduce(sum_Q, group=get_process_subgroup())
+    #     Q /= sum_Q
+
+    #     for _ in range(n_iterations):
+    #         # normalize each row: total weight per prototype must be 1/K
+    #         sum_of_rows = torch.sum(Q, dim=1, keepdim=True)
+    #         if dist.is_initialized():
+    #             dist.all_reduce(sum_of_rows, group=get_process_subgroup())
+    #         Q /= sum_of_rows
+    #         Q /= K
+
+    #         # normalize each column: total weight per sample must be 1/B
+    #         Q /= torch.sum(Q, dim=0, keepdim=True)
+    #         Q /= B
+
+    #     Q *= B  # the colomns must sum to 1 so that Q is an assignment
+    #     return Q.t()
+
     def forward(self, student_logits, teacher_probs, ignore_diagonal=False):
         """
         Cross-entropy between softmax outputs of the teacher and student networks.

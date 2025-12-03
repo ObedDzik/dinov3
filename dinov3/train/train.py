@@ -17,6 +17,9 @@ from typing import Any, Dict
 import wandb
 from monitor_ import add_memory_monitoring_to_training
 import psutil
+import torch.nn.functional as F
+import numpy as np
+from debug_training import debug_forward
 
 import torch
 import torch.distributed
@@ -601,13 +604,20 @@ def do_train(cfg, model, resume=False):
     else:
         log_to_wandb = False
 
-
-
     process_subgroup = distributed.get_process_subgroup()
     ckpt_dir = Path(cfg.train.output_dir, "ckpt").expanduser()
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     model.train()
+
+    #>>>>>>>>>>>>>>>>>debug
+    # logger.info("Checking model initialization...")
+    # for name, param in model.named_parameters():
+    #     if torch.isnan(param).any():
+    #         logger.error(f"NaN found in {name} after init!")
+    #     if param.abs().max() < 1e-6:
+    #         logger.warning(f"Suspiciously small weights in {name}: max={param.abs().max()}")
+    
     # Optimizer
     optimizer = build_optimizer(cfg, model.get_params_groups())
     (
@@ -622,7 +632,40 @@ def do_train(cfg, model, resume=False):
             model,
             dont_save=[k for k, _ in model.state_dict().items() if k.startswith("teacher")],
         )
-    model.init_weights()
+    # model.init_weights() #debug
+
+    # #################debug##############
+
+    # # ADD THIS DEBUG:
+    # logger.info("="*80)
+    # logger.info("CHECKING MODEL INITIALIZATION")
+    # logger.info("="*80)
+    
+
+    # # Check DINO head
+    # dino_head = model.student['dino_head']
+    # if hasattr(dino_head, 'last_layer'):
+    #     weight = dino_head.last_layer.weight
+    #     local = weight._local_tensor
+    #     logger.info(f"DINO head last_layer weight:")
+    #     logger.info(f"  Shape: {weight.shape}")
+    #     logger.info(f"  Mean: {local.mean().item()}")
+    #     logger.info(f"  Std: {local.std().item()}")
+    #     logger.info(f"  Has NaN: {local.isnan().any()}")
+    #     logger.info(f"  Min: {local.min().item()}, Max: {local.max().item()}")
+
+    # # Check backbone
+    # backbone_param = next(model.student['backbone'].parameters())
+    # local_b = backbone_param._local_tensor
+    # logger.info(f"Backbone first param:")
+    # logger.info(f"  Mean: {local_b.mean().item()}")
+    # logger.info(f"  Std: {local_b.std().item()}")
+    # logger.info(f"  Has NaN: {local_b.isnan().any().item()}")
+
+    # logger.info("="*80)
+
+    # ############################end debug###################
+
     start_iter = 0
     if resume and (last_checkpoint_dir := find_latest_checkpoint(ckpt_dir)):
         logger.info(f"Checkpoint found {last_checkpoint_dir}")
@@ -708,6 +751,99 @@ def do_train(cfg, model, resume=False):
         # Forward backward
         optimizer.zero_grad(set_to_none=True)
         total_loss, metrics_dict = model.forward_backward(data, teacher_temp=teacher_temp, iteration=it)
+        # teacher_global, student_global = debug_forward(model, data, teacher_temp=teacher_temp, iteration=it)
+
+        # # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>debug>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        # # In do_train(), right after model.forward_backward():
+        # # In do_train(), right after model.forward_backward():
+        # if iteration < 100 or iteration % 100 == 0:
+        #     logger.info("=" * 80)
+        #     logger.info(f"DEBUG ITERATION {iteration}")
+        #     logger.info("=" * 80)
+            
+        #     # 1. Check teacher temperature schedule
+        #     logger.info(f"1. Teacher temp from schedule: {teacher_temp:.6f}")
+        #     logger.info(f"   Expected: 0.04 at iter 0, gradually warming to 0.07 at iter {30 * OFFICIAL_EPOCH_LENGTH}")
+            
+        #     # 2. Check if teacher is being updated
+        #     with torch.no_grad():
+        #         student_first_param = next(model.student['backbone'].parameters())
+        #         teacher_first_param = next(model.teacher['backbone'].parameters())
+        #         param_diff = (student_first_param - teacher_first_param).abs().mean().item()
+        #         logger.info(f"2. Student-Teacher weight diff: {param_diff:.8f}")
+        #         logger.info(f"   Expected: Small but non-zero (0.0001-0.01), NOT 0.0 or very large")
+            
+        #     # 3. Check teacher and student outputs from current batch
+        #     with torch.no_grad():
+        #         # Use the teacher_global and student_global from the current forward pass
+        #         teacher_logits = teacher_global["cls_after_head"]  # [n_crops, B, K]
+        #         teacher_centered = teacher_global["cls_centered"]   # [n_crops, B, K]
+        #         student_logits = student_global["cls_after_head"]  # [n_crops, B, K]
+                
+        #         # Flatten for statistics
+        #         teacher_logits_flat = teacher_logits.flatten(0, 1)  # [n_crops*B, K]
+        #         teacher_centered_flat = teacher_centered.flatten(0, 1)
+        #         student_logits_flat = student_logits.flatten(0, 1)
+                
+        #         # Check teacher raw logits (before Sinkhorn-Knopp)
+        #         teacher_raw_probs = F.softmax(teacher_logits_flat, dim=-1)
+        #         raw_entropy = -(teacher_raw_probs * torch.log(teacher_raw_probs + 1e-8)).sum(dim=-1).mean().item()
+        #         logger.info(f"3. Teacher raw output entropy: {raw_entropy:.4f}")
+        #         logger.info(f"   Max possible: {np.log(8192):.4f} = 9.01")
+        #         logger.info(f"   Expected: Should decrease from ~9.0 to ~5.0 during training")
+                
+        #         # Check after Sinkhorn-Knopp
+        #         sk_entropy = -(teacher_centered_flat * torch.log(teacher_centered_flat + 1e-8)).sum(dim=-1).mean().item()
+        #         logger.info(f"   After Sinkhorn-Knopp entropy: {sk_entropy:.4f}")
+                
+        #         # Check teacher output statistics
+        #         logger.info(f"   Teacher logits - mean: {teacher_logits_flat.mean():.4f}, std: {teacher_logits_flat.std():.4f}")
+        #         logger.info(f"   Teacher raw probs - max: {teacher_raw_probs.max():.6f}, min: {teacher_raw_probs.min():.6f}")
+        #         logger.info(f"   Teacher centered probs - max: {teacher_centered_flat.max():.6f}, min: {teacher_centered_flat.min():.6f}")
+                
+        #         # Check student output statistics
+        #         logger.info(f"   Student logits - mean: {student_logits_flat.mean():.4f}, std: {student_logits_flat.std():.4f}")
+                
+        #         # Check cosine similarity between teacher and student
+        #         teacher_feat_flat = teacher_logits_flat.flatten()
+        #         student_feat_flat = student_logits_flat.flatten()
+        #         cos_sim = F.cosine_similarity(teacher_feat_flat.unsqueeze(0), student_feat_flat.unsqueeze(0)).item()
+        #         logger.info(f"   Teacher-Student cosine similarity: {cos_sim:.6f}")
+        #         logger.info(f"   Expected: Should be positive and increasing (e.g., 0.1 -> 0.9)")
+            
+        #     # 4. Check DINO center
+        #     logger.info(f"4. DINO center statistics:")
+        #     logger.info(f"   Mean: {model.dino_loss.center.mean():.6f}, Std: {model.dino_loss.center.std():.6f}")
+        #     logger.info(f"   Min: {model.dino_loss.center.min():.6f}, Max: {model.dino_loss.center.max():.6f}")
+        #     logger.info(f"   Expected: Should change over time, not stay constant")
+            
+        #     # 5. Check momentum schedule
+        #     logger.info(f"5. EMA momentum: {mom:.6f}")
+        #     logger.info(f"   Expected: ~0.992")
+            
+        #     # # 6. Check actual loss components
+        #     # logger.info(f"6. Loss components (unweighted):")
+        #     # logger.info(f"   dino_local_crops_loss: {metrics_dict_cleaned.get('dino_local_crops_loss', 'N/A')}")
+        #     # logger.info(f"   dino_global_crops_loss: {metrics_dict_cleaned.get('dino_global_crops_loss', 'N/A')}")
+        #     # logger.info(f"   ibot_loss: {metrics_dict_cleaned.get('ibot_loss', 'N/A')}")
+        #     # logger.info(f"   koleo_loss: {metrics_dict_cleaned.get('koleo_loss', 'N/A')}")
+        #     # logger.info(f"   Expected: DINO should decrease from ~9 to <5, iBOT from ~4.5 to <2")
+            
+        #     # 7. Check if student is learning (gradients flowing)
+        #     student_dino_head = model.student['dino_head']
+        #     if hasattr(student_dino_head, 'last_layer') and hasattr(student_dino_head.last_layer, 'weight'):
+        #         grad = student_dino_head.last_layer.weight.grad
+        #         if grad is not None:
+        #             logger.info(f"7. Student DINO head gradient norm: {grad.norm()}")
+        #             logger.info(f"   Expected: Non-zero, typically 0.01-10")
+        #         else:
+        #             logger.warning("7. NO GRADIENTS on student DINO head (might not have been computed yet)")
+            
+        #     logger.info("=" * 80)
+
+        # del teacher_global
+        # del student_global
+        # torch.cuda.empty_cache()
 
         # Gradient clipping
         if cfg.optim.clip_grad:
@@ -933,6 +1069,7 @@ def main(argv=None):
     else:
         setup_job(output_dir=args.output_dir, seed=args.seed)
         cfg = setup_config(args, strict_cfg=False)
+        # cfg = OmegaConf.load("/home/obed/medproj/dinov3/dinov3/configs/microus_ssl_config.yaml")
         logger.info(cfg)
         setup_logging(
             output=os.path.join(os.path.abspath(args.output_dir), "nan_logs"),
@@ -960,9 +1097,7 @@ def main(argv=None):
         ),
         recurse=True,
     )
-    
-    logger.info(f"Model after distributed:\n{model}")
-    
+
     if args.eval_only:
         model.init_weights()
         iteration = (
@@ -973,7 +1108,9 @@ def main(argv=None):
         )
         return do_test(cfg, model, f"manual_{iteration}")
     
-    do_train(cfg, model, resume=not args.no_resume)
+    else: #debug
+        model.init_weights()
+        do_train(cfg, model, resume=not args.no_resume)
 
 
 if __name__ == "__main__":

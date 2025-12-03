@@ -320,6 +320,12 @@ def init_fsdp_model_from_checkpoint(
                 if not any(skip_load_key in key for skip_load_key in skip_load_keys)
             }
         )
+        # #>>>>>>>>>>>>>>>debug
+        # # In init_fsdp_model_from_checkpoint
+        # logger.info(f"Loaded {len(chkpt)} keys from checkpoint")
+        # logger.info(f"Model has {len(model.state_dict())} keys")
+        # logger.info(f"Sample weight from checkpoint: {list(chkpt.values())[0].mean()}")
+
     else:  # DCP checkpoint
         load_checkpoint(ckpt_dir=checkpoint_path, model=model, process_group=process_group)
 

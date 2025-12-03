@@ -313,7 +313,8 @@ class SSLMetaArch(nn.Module):
                         "dino_loss.center",
                         "ibot_patch_loss.center",
                     ],
-                    keys_not_sharded=["backbone.rope_embed.periods", "qkv.bias_mask"],
+                    keys_not_sharded=["rope_embed.periods", "qkv.bias_mask"],
+                    # keys_not_sharded=["backbone.rope_embed.periods", "qkv.bias_mask"],
                     process_group=distributed.get_default_process_group(),
                 )
                 self.gram_teacher_initialized = True
@@ -326,10 +327,11 @@ class SSLMetaArch(nn.Module):
             init_fsdp_model_from_checkpoint(
                 self.student,
                 self.cfg.student.resume_from_teacher_chkpt,
-                # skip_load_keys=["dino_loss.center", "ibot_patch_loss.center"],
-                skip_load_keys=["dino_loss.center", "ibot_patch_loss.center", "storage_tokens", "qkv.bias_mask"],
-                # keys_not_sharded=["backbone.rope_embed.periods", "qkv.bias_mask"],
-                keys_not_sharded=["rope_embed.periods"],
+                skip_load_keys=["dino_loss.center", "ibot_patch_loss.center"],
+                # skip_load_keys=["dino_loss.center", "ibot_patch_loss.center", "storage_tokens", "qkv.bias_mask"],
+                # keys_not_sharded=["backbone.rope_embed.periods", "qkv.bias_mask"], #actual
+                keys_not_sharded=["rope_embed.periods", "qkv.bias_mask"],
+                # keys_not_sharded=["rope_embed.periods"],
                 process_group=distributed.get_process_subgroup(),
             )
             self.model_ema.load_state_dict(self.student.state_dict())
@@ -363,6 +365,7 @@ class SSLMetaArch(nn.Module):
         assert data["collated_global_crops"].shape[0] == n_global_crops * B
         metrics_dict["local_batch_size"] = B
         metrics_dict["global_batch_size"] = data["global_batch_size"]
+        metrics_dict["teacher_temp"] = teacher_temp #add teacher_temp to logging
 
         global_crops = data["collated_global_crops"].cuda(non_blocking=True)
         local_crops = data["collated_local_crops"].cuda(non_blocking=True)
@@ -439,6 +442,10 @@ class SSLMetaArch(nn.Module):
         n_crops, B, rgb, H, W = images.shape
         images = images.flatten(0, 1)
 
+        # #>>>>>>>>>>>>>>>>>>debug
+        # logger.info(f"Teacher backbone first layer weight mean: {self.teacher.backbone.patch_embed.proj.weight.mean()}")
+        # logger.info(f"Student backbone first layer weight mean: {self.student.backbone.patch_embed.proj.weight.mean()}")
+
         backbone_out = self.teacher.backbone(images, is_training=True)
         cls = backbone_out["x_norm_clstoken"]  # [n_crops * B, D]
         reg = backbone_out["x_storage_tokens"]  # [n_crops * B, R, D]
@@ -447,19 +454,29 @@ class SSLMetaArch(nn.Module):
         # IBOT head only on patches that are masked for the student
         buffer = torch.index_select(ibot_patch.flatten(0, 1), dim=0, index=mask_indices_list)
         masked_patch_after_head = self.teacher.ibot_head(buffer)
+        # self.ibot_patch_loss.update_center(masked_patch_after_head) #debug
+        # self.ibot_patch_loss.apply_center_update() #debug
 
         # DINO head on CLS tokens
         cls_after_head = self.teacher.dino_head(cls)  # [n_crops * B, K]
+        # self.dino_loss.update_center(cls_after_head) #debug
+        # self.dino_loss.apply_center_update()#debug
+        # # Center BEFORE Sinkhorn-Knopp
+        # cls_centered_input = cls_after_head - self.dino_loss.center #debug
 
         # Center with sinkhorn-knopp
         cls_centered = self.dino_loss.sinkhorn_knopp_teacher(
             cls_after_head, teacher_temp=teacher_temp
         )  # [n_crops * B, K]
+        # cls_centered = self.dino_loss.sinkhorn_knopp_teacher(
+        #     cls_centered_input, teacher_temp=teacher_temp,n_iterations=10
+        # )#debug
         cls_centered = cls_centered.unflatten(0, (n_crops, B))  # [n_crops, B, K]
         masked_patch_centered = self.ibot_patch_loss.sinkhorn_knopp_teacher(
             masked_patch_after_head,
             teacher_temp=teacher_temp,
             n_masked_patches_tensor=n_masked_patches_tensor,
+            # center=self.ibot_patch_loss.center #debug
         )  # [n_masked_patches, K]
 
         return {

@@ -27,9 +27,17 @@ class SinkhornKnoppTeacher(nn.Module):
     """
 
     @torch.no_grad()
-    def forward(self, teacher_output, teacher_temp, n_masked_patches_tensor, n_iterations=3):
+    def forward(self, teacher_output, teacher_temp, n_masked_patches_tensor, n_iterations=3):#, center=None):
         teacher_output = teacher_output.float()
         # world_size = dist.get_world_size() if dist.is_initialized() else 1
+
+        #>>>>>>>>>>>>>>>>>>>debug
+        # === FIX: Apply centering if center provided ===
+        # if center is not None:
+        #     teacher_output = teacher_output - center
+        # === END FIX ===
+
+
         Q = torch.exp(teacher_output / teacher_temp).t()  # Q is K-by-B for consistency with notations from our paper
         # B = Q.shape[1] * world_size # number of samples to assign
         B = n_masked_patches_tensor
