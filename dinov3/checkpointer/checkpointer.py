@@ -313,13 +313,30 @@ def init_fsdp_model_from_checkpoint(
             )
             for key, tensor in chkpt.items()
         }
+        # if any('backbone' in s for s in chkpt.keys()):
+        print("REMEMBER TO REMOVE THE STRICT==FALSE PARAMETER IN THE WEIGHT LOADING")
+        print(next(iter(chkpt)))
+        print(skip_load_keys)
         model["backbone"].load_state_dict(
             {
                 key: tensor
                 for key, tensor in chkpt.items()
                 if not any(skip_load_key in key for skip_load_key in skip_load_keys)
-            }
-        )
+            },
+            strict=False
+            )
+
+
+        # else:
+        #     print("in else:")
+        #     print(next(iter(chkpt)))
+        #     model.load_state_dict(
+        #         {
+        #             key: tensor
+        #             for key, tensor in chkpt.items()
+        #             if not any(skip_load_key in key for skip_load_key in skip_load_keys)
+        #         }
+        #     )
         # #>>>>>>>>>>>>>>>debug
         # # In init_fsdp_model_from_checkpoint
         # logger.info(f"Loaded {len(chkpt)} keys from checkpoint")

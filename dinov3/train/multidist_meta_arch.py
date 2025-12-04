@@ -78,6 +78,11 @@ class MultiDistillationMetaArch(SSLMetaArch):
         )
         # End of multidistillation codepath
 
+        # print(f"teacher global: {teacher_global.keys()}")
+        # print(f"student global: {student_global.size()}")
+        # print(f"student local: {student_local.size()}")
+        print(f"masks: {masks.keys() if type(masks) == dict else masks.size()}")
+
         # Compute losses and backprop
         loss_accumulator, loss_dict = self.compute_losses(
             teacher_global=teacher_global,

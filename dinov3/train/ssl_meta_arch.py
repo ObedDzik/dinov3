@@ -322,15 +322,27 @@ class SSLMetaArch(nn.Module):
                 raise ValueError(f"Provide a correct path to {self.gram_ckpt}")
             self.gram_teacher.requires_grad_(False)
             self.gram_teacher.eval()
+
+        if not self.cfg.student.qkv_bias:
+            skip_load_keys=["dino_loss.center", "ibot_patch_loss.center", "qkv.bias"] 
+            keys_not_sharded=["rope_embed.periods"]
+        else:
+            skip_load_keys=["dino_loss.center", "ibot_patch_loss.center"]
+            # skip_load_keys=["dino_loss.center", "ibot_patch_loss.center", "storage_tokens", "qkv.bias_mask"],
+            # keys_not_sharded=["backbone.rope_embed.periods", "qkv.bias_mask"], #actual
+            keys_not_sharded=["rope_embed.periods", "qkv.bias_mask"]
+            # keys_not_sharded=["rope_embed.periods"],
         if self.cfg.student.resume_from_teacher_chkpt:
             logger.info(f"Loading pretrained weights from {self.cfg.student.resume_from_teacher_chkpt}")
             init_fsdp_model_from_checkpoint(
                 self.student,
                 self.cfg.student.resume_from_teacher_chkpt,
-                skip_load_keys=["dino_loss.center", "ibot_patch_loss.center"],
-                # skip_load_keys=["dino_loss.center", "ibot_patch_loss.center", "storage_tokens", "qkv.bias_mask"],
+                skip_load_keys=skip_load_keys,
+                # skip_load_keys=["dino_loss.center", "ibot_patch_loss.center"], #use this if load imagenet weight
+                # skip_load_keys=["dino_loss.center", "ibot_patch_loss.center", "storage_tokens", "qkv.bias_mask"], #actual
                 # keys_not_sharded=["backbone.rope_embed.periods", "qkv.bias_mask"], #actual
-                keys_not_sharded=["rope_embed.periods", "qkv.bias_mask"],
+                keys_not_sharded=keys_not_sharded,
+                # keys_not_sharded=["rope_embed.periods", "qkv.bias_mask"], #use this if load imagenet weight
                 # keys_not_sharded=["rope_embed.periods"],
                 process_group=distributed.get_process_subgroup(),
             )
