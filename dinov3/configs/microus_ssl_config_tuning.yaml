@@ -1,6 +1,6 @@
 
 # Basic settings
-name: experiment_dinov3_ssl_b200_glb_local_128
+name: experiment_dinov3_nctssl_glb_local_128
 output-dir: /${oc.env:CHECKPOINT}/${oc.env:JOB_ID}
 seed: 0
 
@@ -36,7 +36,7 @@ compute_precision:
 dino:
   loss_weight: 1.0
   global_ignore_diagonal: true
-  head_n_prototypes: 8192 #65536  # Your n_prototypes
+  head_n_prototypes: 4096 #65536  # Your n_prototypes
   head_bottleneck_dim: 256
   head_norm_last_layer: false #true  # Your norm_last_layer setting
   head_nlayers: 3
@@ -65,7 +65,7 @@ ibot:
   mask_random_circular_shift: false
   force_masking_even_with_zero_weight: false
   separate_head: true
-  head_n_prototypes: 8192
+  head_n_prototypes: 4096 #8192
   head_bottleneck_dim: 256
   head_norm_last_layer: true
   head_nlayers: 3
@@ -94,8 +94,8 @@ gram:
 
 # Training configuration
 train:
-  batch_size_per_gpu: 128 
-  dataset_path: /data/project/users/mahdi/unlabelled_microus_png
+  batch_size_per_gpu: 64 
+  dataset_path: /data/project/ssl_data
   data_config: null
   output_dir: ${output-dir} #/${oc.env:CHECKPOINT}/${oc.env:JOB_ID}
   saveckp_freq: 20 #40  # Your checkpoint frequency
@@ -202,15 +202,15 @@ crops:
   - 0.15 #0.05
   - 0.4
   global_crops_size: 384 #224
-  local_crops_size: 192 #96
+  local_crops_size: 128 #96
   global_local_crop_pairs_ratios: 1.0
   gram_teacher_crops_size: null
   localcrops_subset_of_globalcrops: false
   share_color_jitter: false
   horizontal_flips: true
   gram_teacher_no_distortions: false
-  rgb_mean: [0.485, 0.456, 0.406]  # ← CHANGED
-  rgb_std: [0.229, 0.224, 0.225]   # ← CHANGED
+  rgb_mean: [0,0,0] #[0.485, 0.456, 0.406]  # ← CHANGED
+  rgb_std: [1,1,1] #[0.229, 0.224, 0.225]   # ← CHANGED
 
 # Evaluation settings
 evaluation:
